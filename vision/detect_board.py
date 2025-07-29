@@ -1,40 +1,41 @@
 import cv2
 import numpy as np
 
-def extract_board_matrix(image_input, debug=False):
-    # Accept image directly (NumPy array)
-    img = cv2.imread(image_input) if isinstance(image_input, str) else image_input
-    h, w = img.shape[:2]
+# === CONFIGURABLE CROPPING PARAMETERS (adjust after testing)
+GRID_TOP_LEFT = (100, 150)  # x, y pixel offset from top-left corner of capture
+GRID_SIZE = 560             # width and height of the board square in pixels
+GRID_DIM = 8                # 8x8 Block Blast board
+THRESHOLD = 50              # Brightness threshold for detecting "filled"
 
-    # Crop region inside the captured window that corresponds to the board
-    # These ratios are based on YOUR window dimensions (like 500x700)
-    # Tune if needed for tighter fit
-    top = int(0.07 * h)     # around the board top
-    bottom = int(0.63 * h)  # just before bottom blocks
-    left = int(0.10 * w)
-    right = int(0.90 * w)
+def extract_board_matrix(image_path: str):
+    image = cv2.imread(image_path)
+    if image is None:
+        raise FileNotFoundError(f"Could not read {image_path}")
 
-    board_img = img[top:bottom, left:right]
-    bh, bw = board_img.shape[:2]
-    cell_height = bh // 8
-    cell_width = bw // 8
+    x0, y0 = GRID_TOP_LEFT
+    x1, y1 = x0 + GRID_SIZE, y0 + GRID_SIZE
+    board_region = image[y0:y1, x0:x1]
 
-    board_matrix = []
+    cell_size = GRID_SIZE // GRID_DIM
+    matrix = []
 
-    for row in range(8):
-        row_vals = []
-        for col in range(8):
-            cell = board_img[
-                row * cell_height : (row + 1) * cell_height,
-                col * cell_width : (col + 1) * cell_width,
-            ]
+    for row in range(GRID_DIM):
+        matrix_row = []
+        for col in range(GRID_DIM):
+            cell_x1 = col * cell_size
+            cell_y1 = row * cell_size
+            cell = board_region[cell_y1:cell_y1+cell_size, cell_x1:cell_x1+cell_size]
+
+            # Convert to grayscale and check average brightness
             gray = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
-            mean_val = np.mean(gray)
-            row_vals.append(1 if mean_val > 50 else 0)
-        board_matrix.append(row_vals)
+            avg_brightness = np.mean(gray)
+            filled = int(avg_brightness < THRESHOLD)  # dark = filled
+            matrix_row.append(filled)
+        matrix.append(matrix_row)
 
-    if debug:
-        for row in board_matrix:
-            print(row)
+    return matrix
 
-    return board_matrix, board_img
+if __name__ == "__main__":
+    matrix = extract_board_matrix("latest_capture.png")
+    for row in matrix:
+        print(row)

@@ -2,44 +2,55 @@ import cv2
 import numpy as np
 import json
 
-# === CONFIGURABLE CROPPING PARAMETERS
-GRID_TOP_LEFT = (100, 150)  # Adjust these
-GRID_SIZE = 560
-GRID_DIM = 8
-THRESHOLD = 50
+# === Configuration
+GRID_TOP_LEFT = (100, 150)        # Crop offset (adjust as needed)
+GRID_SIZE = 560                   # Total pixel size of board square
+GRID_DIM = 8                      # 8x8 Block Blast board
+CELL_SIZE = GRID_SIZE // GRID_DIM
+EMPTY_TILE_PATH = "assets/empty_tile.png"
+COLOR_TOLERANCE = 30              # Color difference tolerance
 OUTPUT_JSON = "board_matrix.json"
 
-def extract_board_matrix(image_path: str):
+def get_empty_tile_color(path: str) -> np.ndarray:
+    tile_img = cv2.imread(path)
+    if tile_img is None:
+        raise FileNotFoundError(f"Could not read {path}")
+    h, w, _ = tile_img.shape
+    center_color = tile_img[h // 2, w // 2]
+    print(f"[INFO] Empty tile color (BGR): {center_color}")
+    return center_color
+
+def is_empty_cell(cell_img: np.ndarray, empty_color: np.ndarray) -> bool:
+    center = cell_img[cell_img.shape[0] // 2, cell_img.shape[1] // 2]
+    diff = np.abs(center.astype(int) - empty_color.astype(int))
+    return np.all(diff < COLOR_TOLERANCE)
+
+def extract_board_matrix(image_path: str, empty_color: np.ndarray):
     image = cv2.imread(image_path)
     if image is None:
         raise FileNotFoundError(f"Could not read {image_path}")
 
     x0, y0 = GRID_TOP_LEFT
-    x1, y1 = x0 + GRID_SIZE, y0 + GRID_SIZE
-    board_region = image[y0:y1, x0:x1]
+    board = image[y0:y0 + GRID_SIZE, x0:x0 + GRID_SIZE]
 
-    cell_size = GRID_SIZE // GRID_DIM
     matrix = []
-
     for row in range(GRID_DIM):
-    matrix_row = []
-    for col in range(GRID_DIM):
-        cell_x1 = col * cell_size
-        cell_y1 = row * cell_size
-        cell = board_region[cell_y1:cell_y1+cell_size, cell_x1:cell_x1+cell_size]
+        matrix_row = []
+        for col in range(GRID_DIM):
+            x1 = col * CELL_SIZE
+            y1 = row * CELL_SIZE
+            cell = board[y1:y1 + CELL_SIZE, x1:x1 + CELL_SIZE]
 
-        gray = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
-        avg_brightness = np.mean(gray)
-        print(f"[DEBUG] ({row}, {col}) Brightness: {avg_brightness:.2f}")
-        filled = int(avg_brightness < THRESHOLD)
-        matrix_row.append(filled)
-    matrix.append(matrix_row)
+            empty = is_empty_cell(cell, empty_color)
+            matrix_row.append(0 if empty else 1)
+        matrix.append(matrix_row)
 
+    return matrix
 
 if __name__ == "__main__":
-    matrix = extract_board_matrix("latest_capture.png")
+    empty_color = get_empty_tile_color(EMPTY_TILE_PATH)
+    matrix = extract_board_matrix("latest_capture.png", empty_color)
 
-    # Save to JSON
     with open(OUTPUT_JSON, "w") as f:
         json.dump(matrix, f)
     print(f"[INFO] Matrix saved to {OUTPUT_JSON}")

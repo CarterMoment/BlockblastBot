@@ -8,17 +8,24 @@ UI_BG_SAMPLE_PATH   = os.path.join(ASSETS_DIR, "inverted_background.png")
 GRID_BG_SAMPLE_PATH = os.path.join(ASSETS_DIR, "inverted_empty_tile.png")
 OUTPUT_JSON         = "board_matrix.json"
 
-# Tolerances & scales
-UI_BG_TOL        = 30    # BGR‑distance to detect UI background
-GRID_BG_TOL      = 20    # BGR‑distance to detect grid background
-MORPH_UI         = 25    # Closing kernel for window mask
-MORPH_GRID       = 7     # Closing kernel for grid mask
-PATCH_SCALE      = 0.6   # sample central 60% of each cell
-OCCUPANCY_THRESH = 0.10  # if >10% patch pixels ≠ grid‑bg → filled
+GRID_SIZE           = 8
 
-GRID_SIZE        = 8
+# Color‑matching tolerances
+UI_BG_TOL           = 30     # for finding the whole QuickTime window
+GRID_BG_TOL         = 20     # for finding the 8×8 grid inside that window
 
-# ——— HELPERS ———
+# Morphology sizes
+MORPH_UI            = 25     # to close holes in the window mask
+MORPH_GRID          = 7      # to close holes in the grid mask
+
+# Patch sampling
+PATCH_SCALE         = 0.6    # sample central 60%×60% of each cell
+OCCUPANCY_THRESH    = 0.10   # if >10% of patch pixels ≠ grid‑bg → filled
+
+# Vertical crop for grid detection
+TOP_FRACTION        = 0.75   # only search upper 75% of window for grid
+
+
 def sample_color_bgr(path):
     img = cv2.imread(path)
     if img is None:
@@ -26,103 +33,119 @@ def sample_color_bgr(path):
     h, w = img.shape[:2]
     return img[h//2, w//2].astype(np.int32)
 
+
 def find_window_roi(img, ui_bg_color):
-    """Mask UI background, invert, close, largest contour → window ROI."""
-    diff = np.linalg.norm(img.astype(np.int32) - ui_bg_color[None,None,:], axis=2)
-    mask_bg = (diff < UI_BG_TOL).astype(np.uint8) * 255
-    mask_win = cv2.bitwise_not(mask_bg)
+    """Mask and isolate the full QuickTime window on screen."""
+    diff   = np.linalg.norm(img.astype(np.int32) - ui_bg_color[None,None,:], axis=2)
+    mask_bg= (diff < UI_BG_TOL).astype(np.uint8)*255
+    mask_w = cv2.bitwise_not(mask_bg)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (MORPH_UI, MORPH_UI))
-    mask_win = cv2.morphologyEx(mask_win, cv2.MORPH_CLOSE, kernel)
-    contours, _ = cv2.findContours(mask_win, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
+    mask_w = cv2.morphologyEx(mask_w, cv2.MORPH_CLOSE, kernel)
+
+    cnts, _ = cv2.findContours(mask_w, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
         raise RuntimeError("Game window not detected")
-    x,y,w,h = cv2.boundingRect(max(contours, key=lambda c: cv2.contourArea(c)))
+    x,y,w,h = cv2.boundingRect(max(cnts, key=lambda c: cv2.contourArea(c)))
     return x, y, w, h
 
+
 def find_board_roi(win_img, grid_bg_color):
-    """Within window, mask grid background & invert → board ROI."""
-    diff = np.linalg.norm(win_img.astype(np.int32) - grid_bg_color[None,None,:], axis=2)
-    mask_bg = (diff < GRID_BG_TOL).astype(np.uint8) * 255
-    mask_board = cv2.bitwise_not(mask_bg)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (MORPH_GRID, MORPH_GRID))
-    mask_board = cv2.morphologyEx(mask_board, cv2.MORPH_CLOSE, kernel)
-    contours, _ = cv2.findContours(mask_board, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        raise RuntimeError("Board region not detected")
-    x,y,w,h = cv2.boundingRect(max(contours, key=lambda c: cv2.contourArea(c)))
-    side = min(w,h)
-    # center square in the detected bbox
-    return x + (w-side)//2, y + (h-side)//2, side, side
+    """
+    Within the captured window, only look at the TOP_FRACTION of the height
+    to find the dark grid background. This excludes the preview blocks at bottom.
+    """
+    H, W = win_img.shape[:2]
+    crop_h = int(H * TOP_FRACTION)
+    roi_src = win_img[0:crop_h, :]
+
+    # mask pixels close to grid_bg_color
+    diff    = np.linalg.norm(roi_src.astype(np.int32) - grid_bg_color[None,None,:], axis=2)
+    mask_bg = (diff < GRID_BG_TOL).astype(np.uint8)*255
+    mask_b  = cv2.bitwise_not(mask_bg)
+    kernel  = cv2.getStructuringElement(cv2.MORPH_RECT, (MORPH_GRID, MORPH_GRID))
+    mask_b  = cv2.morphologyEx(mask_b, cv2.MORPH_CLOSE, kernel)
+
+    cnts, _ = cv2.findContours(mask_b, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        raise RuntimeError("Board region not found (in upper 75%)")
+
+    # bounding rect within the cropped ROI
+    x, y, w, h = cv2.boundingRect(max(cnts, key=lambda c: cv2.contourArea(c)))
+
+    # make square
+    side = min(w, h)
+    return x, y, side, side  # relative to win_img
+
 
 def extract_matrix_and_viz(full_img, ui_roi, board_roi, grid_bg_color):
-    x0,y0,w0,h0 = ui_roi
-    bx,by,bs,_ = board_roi
+    x0, y0, w0, h0 = ui_roi
+    bx, by, bs, _  = board_roi
 
-    # Prepare visualization
+    # Visualize: blue window, yellow board
     viz = full_img.copy()
-    cv2.rectangle(viz, (x0,y0), (x0+w0,y0+h0), (255,0,0), 2)  # blue = window
-    cv2.rectangle(viz, (x0+bx,y0+by), (x0+bx+bs,y0+by+bs), (0,255,255), 2)  # yellow = board
+    cv2.rectangle(viz, (x0,y0), (x0+w0,y0+h0), (255,0,0), 2)
+    cv2.rectangle(viz, (x0+bx,y0+by), (x0+bx+bs,y0+by+bs), (0,255,255), 2)
 
     board = full_img[y0+by:y0+by+bs, x0+bx:x0+bx+bs]
-    cell = bs // GRID_SIZE
+    cell  = bs // GRID_SIZE
     patch = int(cell * PATCH_SCALE)
-    offset = (cell - patch)//2
+    off   = (cell - patch)//2
 
     matrix = []
     for i in range(GRID_SIZE):
         row=[]
         for j in range(GRID_SIZE):
-            # Extract central patch
-            px = x0+bx + j*cell + offset
-            py = y0+by + i*cell + offset
+            # central patch extraction
+            px = x0 + bx + j*cell + off
+            py = y0 + by + i*cell + off
             patch_img = full_img[py:py+patch, px:px+patch].astype(np.int32)
 
-            # Fraction of pixels not matching grid background
-            dist = np.linalg.norm(patch_img - grid_bg_color[None,None,:], axis=2)
-            non_bg_frac = np.mean(dist > GRID_BG_TOL)
+            # fraction of pixels differing from grid background
+            dist       = np.linalg.norm(patch_img - grid_bg_color[None,None,:], axis=2)
+            non_bg_frac= np.mean(dist > GRID_BG_TOL)
 
             filled = 1 if non_bg_frac > OCCUPANCY_THRESH else 0
             row.append(filled)
 
-            # Overlay red/green
+            # overlay: red=filled, green=empty
             color = (0,0,255) if filled else (0,255,0)
             cv2.rectangle(viz,
-                (x0+bx + j*cell,    y0+by + i*cell),
+                (x0+bx + j*cell,   y0+by + i*cell),
                 (x0+bx + (j+1)*cell, y0+by + (i+1)*cell),
                 color, 2)
         matrix.append(row)
 
     return matrix, viz
 
-# ——— MAIN ———
+
 if __name__=="__main__":
-    img = cv2.imread(SCREENSHOT_PATH)
-    if img is None:
+    # 1. Load screenshot & sample colors
+    full = cv2.imread(SCREENSHOT_PATH)
+    if full is None:
         raise FileNotFoundError(f"Cannot load screenshot: {SCREENSHOT_PATH}")
 
-    ui_bg_color   = sample_color_bgr(UI_BG_SAMPLE_PATH)
-    grid_bg_color = sample_color_bgr(GRID_BG_SAMPLE_PATH)
+    ui_bg   = sample_color_bgr(UI_BG_SAMPLE_PATH)
+    grid_bg = sample_color_bgr(GRID_BG_SAMPLE_PATH)
 
-    # Step 1: window ROI
-    win_roi = find_window_roi(img, ui_bg_color)
+    # 2. Find the window ROI
+    window_roi = find_window_roi(full, ui_bg)
+    x0,y0,w0,h0 = window_roi
+    win_img     = full[y0:y0+h0, x0:x0+w0]
 
-    # Step 2: board ROI inside window
-    # Extract window image region:
-    x0,y0,w0,h0 = win_roi
-    win_img = img[y0:y0+h0, x0:x0+w0]
-    board_roi = find_board_roi(win_img, grid_bg_color)
+    # 3. Find the board ROI inside just the top 75% of that window
+    board_roi = find_board_roi(win_img, grid_bg)
 
-    # Step 3: matrix + visualization
-    matrix, viz = extract_matrix_and_viz(img, win_roi, board_roi, grid_bg_color)
+    # 4. Extract matrix + visualize
+    matrix, vis = extract_matrix_and_viz(full, window_roi, board_roi, grid_bg)
 
-    # Save JSON
+    # 5. Save JSON & print
     with open(OUTPUT_JSON, "w") as f:
         json.dump(matrix, f, indent=2)
     print(f"✅ Saved board matrix to {OUTPUT_JSON}")
     for row in matrix:
         print(row)
 
-    # Show overlay
-    cv2.imshow("Board Detection", viz)
+    # 6. Show debug overlay
+    cv2.imshow("Board Detection", vis)
     cv2.waitKey(0)
     cv2.destroyAllWindows()

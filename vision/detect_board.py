@@ -1,11 +1,13 @@
 import cv2
 import numpy as np
+import json
 
-# === CONFIGURABLE CROPPING PARAMETERS (adjust after testing)
-GRID_TOP_LEFT = (100, 150)  # x, y pixel offset from top-left corner of capture
-GRID_SIZE = 560             # width and height of the board square in pixels
-GRID_DIM = 8                # 8x8 Block Blast board
-THRESHOLD = 50              # Brightness threshold for detecting "filled"
+# === CONFIGURABLE CROPPING PARAMETERS
+GRID_TOP_LEFT = (100, 150)  # Adjust these
+GRID_SIZE = 560
+GRID_DIM = 8
+THRESHOLD = 50
+OUTPUT_JSON = "board_matrix.json"
 
 def extract_board_matrix(image_path: str):
     image = cv2.imread(image_path)
@@ -26,10 +28,9 @@ def extract_board_matrix(image_path: str):
             cell_y1 = row * cell_size
             cell = board_region[cell_y1:cell_y1+cell_size, cell_x1:cell_x1+cell_size]
 
-            # Convert to grayscale and check average brightness
             gray = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY)
             avg_brightness = np.mean(gray)
-            filled = int(avg_brightness < THRESHOLD)  # dark = filled
+            filled = int(avg_brightness < THRESHOLD)  # filled if dark
             matrix_row.append(filled)
         matrix.append(matrix_row)
 
@@ -37,5 +38,8 @@ def extract_board_matrix(image_path: str):
 
 if __name__ == "__main__":
     matrix = extract_board_matrix("latest_capture.png")
-    for row in matrix:
-        print(row)
+
+    # Save to JSON
+    with open(OUTPUT_JSON, "w") as f:
+        json.dump(matrix, f)
+    print(f"[INFO] Matrix saved to {OUTPUT_JSON}")

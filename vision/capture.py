@@ -37,10 +37,21 @@ def live_capture_blockblast_window(hsv_color, hue_range=15, sat_range=60, val_ra
         if contours:
             largest = max(contours, key=cv2.contourArea)
             x, y, w, h = cv2.boundingRect(largest)
-            x1, y1 = max(x - PADDING, 0), max(y - PADDING, 0)
-            x2, y2 = min(x + w + PADDING, screen_np.shape[1]), min(y + h + PADDING, screen_np.shape[0])
-            region = (x1, y1, x2, y2)
+            +    # base window crop
+            x1 = max(x - PADDING, 0)
+            y1 = max(y - PADDING, 0)
+            x2 = min(x + w + PADDING, screen_np.shape[1])
+            y2 = min(y + h + PADDING, screen_np.shape[0])
 
+            # now trim a little off each side so UI chrome can’t sneak in:
+            Mx = int((x2 - x1) * 0.02)  # 2% left/right
+            My_top = int((y2 - y1) * 0.05)  # 5% top
+            My_bot = int((y2 - y1) * 0.02)  # 2% bottom (optional)
+
+            x1 += Mx
+            x2 -= Mx
+            y1 += My_top
+            y2 -= My_bot
             # Save to disk
             cropped = screen_np[y1:y2, x1:x2]
             cv2.imwrite(CAPTURE_PATH, cropped)

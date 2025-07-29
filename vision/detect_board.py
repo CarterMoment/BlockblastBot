@@ -1,88 +1,79 @@
 #!/usr/bin/env python3
 import cv2, numpy as np, json, os
 
-# ——— CONFIGURATION ———
+# ——— CONFIG ———
 ASSETS_DIR    = "assets"
 CAPTURE_IMG   = os.path.join(ASSETS_DIR, "latest_capture.png")
 BG_SAMPLE_IMG = os.path.join(ASSETS_DIR, "inverted_background.png")
 OUTPUT_JSON   = "board_matrix.json"
 
 GRID_SIZE     = 8
-BG_TOLERANCE  = 30    # how different a cell must be from background to count as "filled"
-MORPH_SIZE    = 15    # morphological kernel size for closing the board mask
-PATCH_SCALE   = 0.5   # fraction of cell width/height to sample (inner patch)
+BG_THRESH     = 60      # gray threshold to isolate board region
+MORPH_SIZE    = 15
+PATCH_SCALE   = 0.5     # sample inner 50% of each cell
+SAT_THRESHOLD = 60      # if mean S > this, mark as filled
 
-# ——— UTILITIES ———
-def load_background_color(path):
-    """Load the sample background image and return its center BGR color."""
-    img = cv2.imread(path)
-    if img is None:
-        raise FileNotFoundError(f"Cannot load background sample: {path}")
-    h, w = img.shape[:2]
-    return img[h//2, w//2].astype(np.float32)
-
-def find_board_region(img, bg_color):
-    """
-    Create a mask of pixels *close* to bg_color, invert it, close holes,
-    and return the bbox of the largest contour as (x,y,w,h) square.
-    """
-    # Compute per‑pixel distance from bg_color
-    diff = np.linalg.norm(img.astype(np.float32) - bg_color, axis=2)
-    mask_bg = (diff < BG_TOLERANCE).astype(np.uint8) * 255    # 255 = background
-    mask = cv2.bitwise_not(mask_bg)                          # invert → board+blocks
-
-    # Close small holes
+# ——— HELPERS ———
+def find_board_region(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, m = cv2.threshold(gray, BG_THRESH, 255, cv2.THRESH_BINARY_INV)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (MORPH_SIZE, MORPH_SIZE))
-    closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-
-    # Find the largest contour
-    cnts, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts:
-        raise RuntimeError("Could not find board region!")
+        raise RuntimeError("Board region not found.")
     x, y, w, h = cv2.boundingRect(max(cnts, key=cv2.contourArea))
-
-    # Make square by cropping to min(w,h)
     side = min(w, h)
     return x, y, side, side
 
-def extract_board_matrix(img, bg_color):
-    """Given the full RGB image and bg_color, return 8×8 matrix of 0/1."""
-    x, y, side, _ = find_board_region(img, bg_color)
+def extract_by_saturation(img, region):
+    x, y, side, _ = region
     board = img[y:y+side, x:x+side]
+    hsv = cv2.cvtColor(board, cv2.COLOR_BGR2HSV)
     cell_w = cell_h = side // GRID_SIZE
 
     matrix = []
+    viz = board.copy()
     for i in range(GRID_SIZE):
         row = []
         for j in range(GRID_SIZE):
-            # inner patch (to avoid border/shadows)
-            px = int(j*cell_w + (cell_w*(1-PATCH_SCALE)/2))
-            py = int(i*cell_h + (cell_h*(1-PATCH_SCALE)/2))
-            pw = int(cell_w * PATCH_SCALE)
-            ph = int(cell_h * PATCH_SCALE)
+            # inner patch
+            x1 = int(j*cell_w + cell_w*(1-PATCH_SCALE)/2)
+            y1 = int(i*cell_h + cell_h*(1-PATCH_SCALE)/2)
+            x2 = x1 + int(cell_w*PATCH_SCALE)
+            y2 = y1 + int(cell_h*PATCH_SCALE)
+            patch = hsv[y1:y2, x1:x2]
+            mean_s = patch[:,:,1].mean()
 
-            patch = board[py:py+ph, px:px+pw].astype(np.float32)
-            avg_color = patch.reshape(-1,3).mean(axis=0)
+            filled = 1 if mean_s > SAT_THRESHOLD else 0
+            row.append(filled)
 
-            dist = np.linalg.norm(avg_color - bg_color)
-            row.append(1 if dist > BG_TOLERANCE else 0)
+            # draw viz: red for filled, green for empty
+            color = (0,0,255) if filled else (0,255,0)
+            cv2.rectangle(viz,
+                          (j*cell_w, i*cell_h),
+                          ((j+1)*cell_w, (i+1)*cell_h),
+                          color, 2)
+
         matrix.append(row)
-    return matrix
+    return matrix, viz
 
 # ——— MAIN ———
 if __name__ == "__main__":
-    # Load images
-    cap = cv2.imread(CAPTURE_IMG)
-    if cap is None:
-        raise FileNotFoundError(f"Cannot load capture image: {CAPTURE_IMG}")
+    img = cv2.imread(CAPTURE_IMG)
+    if img is None:
+        raise FileNotFoundError(f"Cannot load capture: {CAPTURE_IMG}")
 
-    bg_col = load_background_color(BG_SAMPLE_IMG)
+    region = find_board_region(img)
+    matrix, viz = extract_by_saturation(img, region)
 
-    # Extract & save
-    mat = extract_board_matrix(cap, bg_col)
+    # Save JSON
     with open(OUTPUT_JSON, "w") as f:
-        json.dump(mat, f, indent=2)
-
+        json.dump(matrix, f, indent=2)
     print(f"✅ Saved board matrix to {OUTPUT_JSON}")
-    for row in mat:
-        print(row)
+    for row in matrix: print(row)
+
+    # Show visualization
+    cv2.imshow("Board Detection (red=filled, green=empty)", viz)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()

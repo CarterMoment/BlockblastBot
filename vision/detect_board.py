@@ -2,74 +2,81 @@
 import cv2, numpy as np, json, os
 
 # ——— CONFIGURATION ———
-ASSETS_DIR      = "assets"
-CAPTURE_IMG     = os.path.join(ASSETS_DIR, "latest_capture.png")
-BG_SAMPLE_IMG   = os.path.join(ASSETS_DIR, "inverted_background.png")
-OUTPUT_JSON     = "board_matrix.json"
+ASSETS_DIR       = "assets"
+CAPTURE_IMG      = os.path.join(ASSETS_DIR, "latest_capture.png")
+EMPTY_TILE_IMG   = os.path.join(ASSETS_DIR, "inverted_empty_tile.png")
+OUTPUT_JSON      = "board_matrix.json"
 
-GRID_SIZE       = 8
-BG_TOLERANCE    = 20     # Max BGR‐distance to consider “background” (brown) 
-MORPH_SIZE      = 15     # Morph kernel to close holes in the grid mask
-PATCH_SCALE     = 0.5    # Sample central 50%×50% patch of each cell
-OCCUPANCY_THRESH= 0.20   # If >20% of patch pixels are non‐background → filled
+GRID_SIZE        = 8
+BG_THRESH        = 60     # gray threshold to find the board mask
+MORPH_SIZE       = 15     # closes small gaps in grid mask
+PATCH_SCALE      = 0.5    # sample central 50% patch of each cell
+EMPTY_HSV_TOL    = np.array([10, 60, 60])  # tolerance in HSV for matching "empty" cell
+EMPTY_FRAC_THRESH = 0.5   # >50% of pixels match empty → mark empty
 
 # ——— HELPERS ———
-def sample_bg_color(path):
+def load_empty_hsv(path):
+    """Return the center HSV of the provided empty-tile image."""
     img = cv2.imread(path)
     if img is None:
         raise FileNotFoundError(path)
-    h, w = img.shape[:2]
-    return img[h//2, w//2].astype(np.int32)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    h, w = hsv.shape[:2]
+    return hsv[h//2, w//2]
 
-def find_board_region(img, bg_color):
-    """Mask background, invert, close holes, find largest contour."""
-    diff = np.linalg.norm(img.astype(np.int32) - bg_color[None,None,:], axis=2)
-    bg_mask = (diff < BG_TOLERANCE).astype(np.uint8) * 255
-    board_mask = cv2.bitwise_not(bg_mask)
+def find_board_region(img):
+    """Find the square board region by masking dark grid background."""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, BG_THRESH, 255, cv2.THRESH_BINARY_INV)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (MORPH_SIZE, MORPH_SIZE))
-    board_mask = cv2.morphologyEx(board_mask, cv2.MORPH_CLOSE, kernel)
-    cnts, _ = cv2.findContours(board_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts:
-        raise RuntimeError("Could not find board!")
-    x,y,w,h = cv2.boundingRect(max(cnts, key=lambda c: cv2.contourArea(c)))
+        raise RuntimeError("Could not locate board!")
+    x,y,w,h = cv2.boundingRect(max(cnts, key=cv2.contourArea))
     side = min(w,h)
     return x, y, side, side
 
-def extract_board_matrix(img, bg_color):
-    x,y,side,_ = find_board_region(img, bg_color)
+def extract_matrix(img, empty_hsv):
+    """Split the board into 8x8 cells and classify by matching empty_hsv."""
+    x,y,side,_ = find_board_region(img)
     board = img[y:y+side, x:x+side]
+    hsv_board = cv2.cvtColor(board, cv2.COLOR_BGR2HSV)
     cell = side // GRID_SIZE
     patch = int(cell * PATCH_SCALE)
-    offset = (cell - patch) // 2
+    offset = (cell - patch)//2
 
     matrix = []
-    vis = board.copy()
+    vis = img.copy()
+    # overlay board crop
+    cv2.rectangle(vis, (x,y), (x+side, y+side), (255,0,0), 2)
+
     for i in range(GRID_SIZE):
-        row=[]
+        row = []
         for j in range(GRID_SIZE):
-            x1 = j*cell + offset
-            y1 = i*cell + offset
-            x2, y2 = x1 + patch, y1 + patch
-            tile = board[y1:y2, x1:x2].astype(np.int32)
+            x1 = x + j*cell + offset
+            y1 = y + i*cell + offset
+            patch_hsv = hsv_board[i*cell+offset:i*cell+offset+patch,
+                                  j*cell+offset:j*cell+offset+patch]
 
-            # count non‐background pixels
-            dist = np.linalg.norm(tile - bg_color[None,None,:], axis=2)
-            non_bg = np.count_nonzero(dist > BG_TOLERANCE)
-            frac = non_bg / (patch*patch)
-            filled = 1 if frac > OCCUPANCY_THRESH else 0
-            row.append(filled)
+            # compute fraction of pixels within EMPTY_HSV_TOL tolerance
+            diff = np.abs(patch_hsv.astype(int) - empty_hsv[None,None,:])
+            within = np.all(diff <= EMPTY_HSV_TOL, axis=2)
+            frac = np.mean(within)
 
-            # draw viz
-            color = (0,0,255) if filled else (0,255,0)
-            cv2.rectangle(vis, (j*cell, i*cell), ((j+1)*cell, (i+1)*cell), color, 2)
+            empty = frac >= EMPTY_FRAC_THRESH
+            row.append(0 if empty else 1)
+
+            # draw overlay: green=empty, red=filled
+            color = (0,255,0) if empty else (0,0,255)
+            cv2.rectangle(vis,
+                (x + j*cell, y + i*cell),
+                (x + (j+1)*cell, y + (i+1)*cell),
+                color, 2)
         matrix.append(row)
 
-    # overlay board crop on full image for reference
-    full_vis = img.copy()
-    cv2.rectangle(full_vis, (x,y), (x+side,y+side), (255,0,0), 2)
-    full_vis[y:y+side, x:x+side] = vis
-
-    cv2.imshow("Board Detection (red=filled/green=empty)", full_vis)
+    # show annotation
+    cv2.imshow("Board Detection", vis)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
@@ -79,13 +86,13 @@ def extract_board_matrix(img, bg_color):
 if __name__=="__main__":
     cap = cv2.imread(CAPTURE_IMG)
     if cap is None:
-        raise FileNotFoundError(f"Cannot load {CAPTURE_IMG}")
-    bg_col = sample_bg_color(BG_SAMPLE_IMG)
+        raise FileNotFoundError(f"Cannot load capture: {CAPTURE_IMG}")
 
-    mat = extract_board_matrix(cap, bg_col)
+    empty_hsv = load_empty_hsv(EMPTY_TILE_IMG)
+    board = extract_matrix(cap, empty_hsv)
 
     with open(OUTPUT_JSON, "w") as f:
-        json.dump(mat, f, indent=2)
-    print(f"✅ Saved matrix to {OUTPUT_JSON}")
-    for row in mat:
+        json.dump(board, f, indent=2)
+    print(f"✅ Saved board matrix to {OUTPUT_JSON}")
+    for row in board:
         print(row)

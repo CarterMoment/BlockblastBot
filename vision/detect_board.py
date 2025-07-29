@@ -4,7 +4,7 @@ import numpy as np
 import json
 
 # === CONFIGURATION ===
-IMG_PATH        = "assets/latest_capture.png"
+IMG_PATH        = "latest_capture.png"
 EMPTY_TILE_PATH = "assets/inverted_empty_tile.png"
 OUTPUT_JSON     = "board_matrix.json"
 GRID_SIZE       = 8

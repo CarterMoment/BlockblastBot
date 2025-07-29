@@ -2,97 +2,133 @@
 import cv2, numpy as np, json, os
 
 # ——— CONFIGURATION ———
-ASSETS_DIR       = "assets"
-CAPTURE_IMG      = "latest_capture.png"
-EMPTY_TILE_IMG   = os.path.join(ASSETS_DIR, "inverted_empty_tile.png")
-OUTPUT_JSON      = "board_matrix.json"
+ASSETS      = "assets"
+CAP_IMG     = os.path.join(ASSETS, "latest_capture.png")
+OUTPUT_JSON = "board_matrix.json"
 
-GRID_SIZE        = 8
-BG_THRESH        = 60     # gray threshold to find the board mask
-MORPH_SIZE       = 15     # closes small gaps in grid mask
-PATCH_SCALE      = 0.5    # sample central 50% patch of each cell
-EMPTY_HSV_TOL    = np.array([10, 60, 60])  # tolerance in HSV for matching "empty" cell
-EMPTY_FRAC_THRESH = 0.5   # >50% of pixels match empty → mark empty
+GRID        = 8
+WARP_SIZE   = 800        # size to warp board to (800×800)
+EDGE_THRESH = 0.02       # fraction of cell pixels with edges → marked filled
 
 # ——— HELPERS ———
-def load_empty_hsv(path):
-    """Return the center HSV of the provided empty-tile image."""
-    img = cv2.imread(path)
-    if img is None:
-        raise FileNotFoundError(path)
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    h, w = hsv.shape[:2]
-    return hsv[h//2, w//2]
 
 def find_board_region(img):
-    """Find the square board region by masking dark grid background."""
+    """Roughly locate the board by masking dark grid background."""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    _, mask = cv2.threshold(gray, BG_THRESH, 255, cv2.THRESH_BINARY_INV)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (MORPH_SIZE, MORPH_SIZE))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts:
-        raise RuntimeError("Could not locate board!")
-    x,y,w,h = cv2.boundingRect(max(cnts, key=cv2.contourArea))
+    _, m = cv2.threshold(gray, 60, 255, cv2.THRESH_BINARY_INV)
+    k = cv2.getStructuringElement(cv2.MORPH_RECT, (15,15))
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k)
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    x,y,w,h = cv2.boundingRect(max(cnts, key=lambda c: cv2.contourArea(c)))
     side = min(w,h)
-    return x, y, side, side
+    # Center the square if needed
+    return x, y + (h-side)//2, side, side
 
-def extract_matrix(img, empty_hsv):
-    """Split the board into 8x8 cells and classify by matching empty_hsv."""
-    x,y,side,_ = find_board_region(img)
+def detect_border_lines(board):
+    """Detect horizontal/vertical border lines in the cropped board image."""
+    gray = cv2.cvtColor(board, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5,5), 0)
+    edges = cv2.Canny(blurred, 50, 150)
+    lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=100,
+                            minLineLength=board.shape[1]*0.5,
+                            maxLineGap=20)
+    verts, hors = [], []
+    if lines is None:
+        return verts, hors
+    for [[x1,y1,x2,y2]] in lines:
+        if abs(x1-x2) < abs(y1-y2):  # vertical
+            verts.append((x1,y1,x2,y2))
+        else:
+            hors.append((x1,y1,x2,y2))
+    return verts, hors
+
+def pick_border(lines, key_idx, extreme='min'):
+    """
+    From list of lines, pick the one with extreme coordinate:
+    key_idx=0 for x1 (vertical), 1 for y1 (horizontal).
+    extreme='min' or 'max'.
+    """
+    if not lines:
+        raise RuntimeError("No border lines found")
+    idx = 0 if extreme=='min' else -1
+    # sort by average of the key coordinate (x or y)
+    lines_sorted = sorted(lines, key=lambda l: (l[key_idx] + l[(key_idx+2)%4])//2)
+    return lines_sorted[0] if extreme=='min' else lines_sorted[-1]
+
+def line_intersection(l1, l2):
+    """Intersect two infinite lines given by (x1,y1,x2,y2)."""
+    x1,y1,x2,y2 = l1
+    x3,y3,x4,y4 = l2
+    denom = (x1-x2)*(y3-y4) - (y1-y2)*(x3-x4)
+    if denom == 0:
+        return None
+    px = ((x1*y2-y1*x2)*(x3-x4) - (x1-x2)*(x3*y4-y3*x4)) / denom
+    py = ((x1*y2-y1*x2)*(y3-y4) - (y1-y2)*(x3*y4-y3*x4)) / denom
+    return [int(px), int(py)]
+
+def warp_board(img, region):
+    """Crop approximate region, detect borders, and warp to WARP_SIZE×WARP_SIZE."""
+    x,y,side,_ = region
     board = img[y:y+side, x:x+side]
-    hsv_board = cv2.cvtColor(board, cv2.COLOR_BGR2HSV)
-    cell = side // GRID_SIZE
-    patch = int(cell * PATCH_SCALE)
-    offset = (cell - patch)//2
+    verts, hors = detect_border_lines(board)
 
+    # Pick left/right and top/bottom borders
+    left  = pick_border(verts, 0, 'min')
+    right = pick_border(verts, 0, 'max')
+    top   = pick_border(hors, 1, 'min')
+    bottom= pick_border(hors, 1, 'max')
+
+    # Compute corner intersections
+    tl = line_intersection(left,  top)
+    tr = line_intersection(right, top)
+    br = line_intersection(right, bottom)
+    bl = line_intersection(left, bottom)
+    src = np.float32([tl, tr, br, bl])
+    dst = np.float32([[0,0], [WARP_SIZE,0], [WARP_SIZE,WARP_SIZE], [0,WARP_SIZE]])
+
+    M = cv2.getPerspectiveTransform(src, dst)
+    warped = cv2.warpPerspective(board, M, (WARP_SIZE, WARP_SIZE))
+    return warped
+
+def classify_cells(warped):
+    """Split warped board into GRID×GRID and use edge density to classify."""
+    gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(cv2.GaussianBlur(gray,(3,3),0), 50,150)
+    cell = WARP_SIZE // GRID
     matrix = []
-    vis = img.copy()
-    # overlay board crop
-    cv2.rectangle(vis, (x,y), (x+side, y+side), (255,0,0), 2)
-
-    for i in range(GRID_SIZE):
-        row = []
-        for j in range(GRID_SIZE):
-            x1 = x + j*cell + offset
-            y1 = y + i*cell + offset
-            patch_hsv = hsv_board[i*cell+offset:i*cell+offset+patch,
-                                  j*cell+offset:j*cell+offset+patch]
-
-            # compute fraction of pixels within EMPTY_HSV_TOL tolerance
-            diff = np.abs(patch_hsv.astype(int) - empty_hsv[None,None,:])
-            within = np.all(diff <= EMPTY_HSV_TOL, axis=2)
-            frac = np.mean(within)
-
-            empty = frac >= EMPTY_FRAC_THRESH
-            row.append(0 if empty else 1)
-
-            # draw overlay: green=empty, red=filled
-            color = (0,255,0) if empty else (0,0,255)
+    vis = warped.copy()
+    for i in range(GRID):
+        row=[]
+        for j in range(GRID):
+            patch = edges[i*cell:(i+1)*cell, j*cell:(j+1)*cell]
+            frac = np.mean(patch>0)
+            filled = 1 if frac > EDGE_THRESH else 0
+            row.append(filled)
+            color = (0,0,255) if filled else (0,255,0)
             cv2.rectangle(vis,
-                (x + j*cell, y + i*cell),
-                (x + (j+1)*cell, y + (i+1)*cell),
-                color, 2)
+                          (j*cell, i*cell),
+                          ((j+1)*cell, (i+1)*cell),
+                          color, 2)
         matrix.append(row)
-
-    # show annotation
-    cv2.imshow("Board Detection", vis)
+    cv2.imshow("Warped & Classified", vis)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
-
     return matrix
 
-# ——— MAIN ———
-if __name__=="__main__":
-    cap = cv2.imread(CAPTURE_IMG)
-    if cap is None:
-        raise FileNotFoundError(f"Cannot load capture: {CAPTURE_IMG}")
+def main():
+    img = cv2.imread(CAP_IMG)
+    if img is None:
+        raise FileNotFoundError(f"Cannot load {CAP_IMG}")
 
-    empty_hsv = load_empty_hsv(EMPTY_TILE_IMG)
-    board = extract_matrix(cap, empty_hsv)
+    region = find_board_region(img)
+    warped = warp_board(img, region)
+    matrix = classify_cells(warped)
 
-    with open(OUTPUT_JSON, "w") as f:
-        json.dump(board, f, indent=2)
-    print(f"✅ Saved board matrix to {OUTPUT_JSON}")
-    for row in board:
+    with open(OUTPUT_JSON,"w") as f:
+        json.dump(matrix,f,indent=2)
+    print(f"✅ Saved matrix to {OUTPUT_JSON}")
+    for row in matrix:
         print(row)
+
+if __name__=="__main__":
+    main()

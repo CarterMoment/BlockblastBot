@@ -2,12 +2,13 @@ import cv2
 import numpy as np
 from PIL import ImageGrab
 import time
-from vision.capture_quicktime_utils import get_hsv_from_background  # move helper if needed
+from vision.capture_quicktime_utils import get_hsv_from_background  # Keep as is
 
-# Tune these if needed
+# === CONFIGURATION ===
 PADDING = 10
-REFRESH_DELAY = 0.3
-SAMPLE_COORD = (10, 10)  # Pick any pixel inside your blank_background.png
+REFRESH_DELAY = 1.5  # in seconds
+SAMPLE_COORD = (10, 10)  # Coordinates inside blank background image
+CAPTURE_PATH = "latest_capture.png"
 
 def live_capture_blockblast_window(hsv_color, hue_range=15, sat_range=60, val_range=80):
     lower = np.array([
@@ -22,13 +23,13 @@ def live_capture_blockblast_window(hsv_color, hue_range=15, sat_range=60, val_ra
     ])
     print(f"[INFO] HSV range: {lower} to {upper}")
 
+    print("[INFO] Starting capture loop. Press 'q' to stop.")
     while True:
         screen = ImageGrab.grab()
         screen_np = np.array(screen)
         screen_bgr = cv2.cvtColor(screen_np, cv2.COLOR_RGB2BGR)
         hsv = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2HSV)
 
-        # Mask for the background color
         mask = cv2.inRange(hsv, lower, upper)
         mask = cv2.medianBlur(mask, 7)
 
@@ -40,8 +41,12 @@ def live_capture_blockblast_window(hsv_color, hue_range=15, sat_range=60, val_ra
             x2, y2 = min(x + w + PADDING, screen_np.shape[1]), min(y + h + PADDING, screen_np.shape[0])
             region = (x1, y1, x2, y2)
 
-            # Extract region and display
+            # Save to disk
             cropped = screen_np[y1:y2, x1:x2]
+            cv2.imwrite(CAPTURE_PATH, cropped)
+            print(f"[INFO] Saved capture to {CAPTURE_PATH}")
+
+            # Optional: show it
             cv2.imshow("Block Blast Detected", cropped)
         else:
             print("[WARN] No matching region found.")

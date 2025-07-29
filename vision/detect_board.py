@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import json
-from vision.capture_quicktime_utils import get_hsv_from_background
+from capture_quicktime_utils import get_hsv_from_background
 
 # Config
 GRID_SIZE = 8

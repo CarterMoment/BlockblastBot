@@ -2,76 +2,69 @@
 import cv2
 import numpy as np
 import json
-import argparse
 
-def find_board_region(img, board_thresh=60, morph_size=15):
-    """
-    Find the largest dark region (the 8×8 grid) in the image.
-    - board_thresh: grayscale threshold; pixels darker than this are considered grid.
-    - morph_size: size of morphological closing kernel to fill small gaps.
-    Returns (x, y, w, h) of a square crop around the board.
-    """
+# === CONFIGURATION ===
+IMG_PATH        = "assets/latest_capture.png"
+EMPTY_TILE_PATH = "assets/inverted_empty_tile.png"
+OUTPUT_JSON     = "board_matrix.json"
+GRID_SIZE       = 8
+HSV_TOLERANCE   = np.array([10, 60, 60])   # H, S, V tolerances
+
+def load_hsv(path):
+    img = cv2.imread(path)
+    if img is None:
+        raise FileNotFoundError(f"Could not read: {path}")
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    h, w = hsv.shape[:2]
+    return hsv[h//2, w//2]
+
+def find_board_region(img, thresh=60, morph=15):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # Mask darker pixels (the board background)
-    _, mask = cv2.threshold(gray, board_thresh, 255, cv2.THRESH_BINARY_INV)
-    # Close small holes to get one solid blob
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (morph_size, morph_size))
-    closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    # Find contours and pick the largest
-    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        raise RuntimeError("Could not find the board region.")
+    _, m = cv2.threshold(gray, thresh, 255, cv2.THRESH_BINARY_INV)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (morph, morph))
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel)
+    contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     x, y, w, h = cv2.boundingRect(max(contours, key=cv2.contourArea))
-    # Make it square by taking the smaller side
     side = min(w, h)
     return x, y, side, side
 
-def extract_board_matrix(img, region, grid_size=8, block_thresh=100):
-    """
-    Given the full image and the board region (x,y,w,h), split into grid_size^2 cells,
-    compute each cell's mean gray value, and classify:
-       mean_gray > block_thresh → 1 (filled), else 0 (empty).
-    Returns an 8×8 list of lists.
-    """
-    x, y, w, h = region
-    board = img[y:y+h, x:x+w]
-    gray = cv2.cvtColor(board, cv2.COLOR_BGR2GRAY)
-    cell_h, cell_w = h // grid_size, w // grid_size
+def extract_board_matrix(img, empty_hsv):
+    x, y, w, h = find_board_region(img)
+    tile_w, tile_h = w // GRID_SIZE, h // GRID_SIZE
+    hsv_full = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
     matrix = []
-    for i in range(grid_size):
+    for i in range(GRID_SIZE):
         row = []
-        for j in range(grid_size):
-            cy1, cy2 = i*cell_h, (i+1)*cell_h
-            cx1, cx2 = j*cell_w, (j+1)*cell_w
-            cell = gray[cy1:cy2, cx1:cx2]
-            mean_val = int(np.mean(cell))
-            row.append(1 if mean_val > block_thresh else 0)
+        for j in range(GRID_SIZE):
+            # sample a 50%×50% centered patch of each cell
+            x1 = x + j*tile_w + tile_w//4
+            y1 = y + i*tile_h + tile_h//4
+            x2 = x + j*tile_w + 3*tile_w//4
+            y2 = y + i*tile_h + 3*tile_h//4
+            patch = hsv_full[y1:y2, x1:x2]
+
+            avg_hsv = patch.reshape(-1,3).mean(axis=0)
+            diff = np.abs(avg_hsv - empty_hsv)
+            cell = 0 if np.all(diff < HSV_TOLERANCE) else 1
+            row.append(cell)
         matrix.append(row)
     return matrix
 
 def main():
-    p = argparse.ArgumentParser(description="Detect 8×8 Block Blast board from a screenshot.")
-    p.add_argument("image", help="Path to the screenshot (e.g. latest_capture.png)")
-    p.add_argument("-o","--output", default="board_matrix.json", help="Where to save the JSON matrix")
-    p.add_argument("--board-thresh", type=int, default=60,
-                   help="Gray threshold to find the board background (darker than this).")
-    p.add_argument("--block-thresh", type=int, default=100,
-                   help="Gray threshold to detect a filled block (brighter than this).")
-    p.add_argument("--morph-size", type=int, default=15,
-                   help="Kernel size for closing the board mask.")
-    args = p.parse_args()
-
-    img = cv2.imread(args.image)
+    img = cv2.imread(IMG_PATH)
     if img is None:
-        p.error(f"Could not load image: {args.image}")
+        raise FileNotFoundError(f"Could not load screenshot: {IMG_PATH}")
 
-    region = find_board_region(img, board_thresh=args.board_thresh, morph_size=args.morph_size)
-    matrix = extract_board_matrix(img, region, grid_size=8, block_thresh=args.block_thresh)
+    empty_hsv = load_hsv(EMPTY_TILE_PATH)
+    board = extract_board_matrix(img, empty_hsv)
 
-    with open(args.output, "w") as f:
-        json.dump(matrix, f, indent=2)
-    print(f"✅ Saved board matrix to {args.output}")
+    with open(OUTPUT_JSON, "w") as f:
+        json.dump(board, f, indent=2)
+
+    print(f"✅ Saved board matrix to {OUTPUT_JSON}")
+    for row in board:
+        print(row)
 
 if __name__ == "__main__":
     main()

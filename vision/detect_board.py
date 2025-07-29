@@ -1,56 +1,55 @@
 import cv2
 import numpy as np
 import json
+from vision.capture_quicktime_utils import get_hsv_from_background
 
-# === Configuration
-GRID_TOP_LEFT = (100, 150)        # Crop offset (adjust as needed)
-GRID_SIZE = 560                   # Total pixel size of board square
-GRID_DIM = 8                      # 8x8 Block Blast board
-CELL_SIZE = GRID_SIZE // GRID_DIM
-EMPTY_TILE_PATH = "assets/empty_tile.png"
-COLOR_TOLERANCE = 30              # Color difference tolerance
-OUTPUT_JSON = "board_matrix.json"
+# Config
+GRID_SIZE = 8
+BG_IMAGE_PATH = "assets/inverted_background.png"
+EMPTY_TILE_PATH = "assets/inverted_empty_tile.png"
+CAPTURE_PATH = "latest_capture.png"
+SAMPLE_COORD = (10, 10)
+TOLERANCE = np.array([15, 60, 80])  # H, S, V tolerance
 
-def get_empty_tile_color(path: str) -> np.ndarray:
-    tile_img = cv2.imread(path)
-    if tile_img is None:
-        raise FileNotFoundError(f"Could not read {path}")
-    h, w, _ = tile_img.shape
-    center_color = tile_img[h // 2, w // 2]
-    print(f"[INFO] Empty tile color (BGR): {center_color}")
-    return center_color
+def find_board_bounds(image_hsv, bg_hsv):
+    lower = np.maximum(bg_hsv - TOLERANCE, 0)
+    upper = np.minimum(bg_hsv + TOLERANCE, 255)
+    mask = cv2.inRange(image_hsv, lower, upper)
+    mask = cv2.bitwise_not(mask)  # Invert: we want non-bg
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        raise RuntimeError("No board-like contour found.")
+    return cv2.boundingRect(max(contours, key=cv2.contourArea))  # x, y, w, h
 
-def is_empty_cell(cell_img: np.ndarray, empty_color: np.ndarray) -> bool:
-    center = cell_img[cell_img.shape[0] // 2, cell_img.shape[1] // 2]
-    diff = np.abs(center.astype(int) - empty_color.astype(int))
-    return np.all(diff < COLOR_TOLERANCE)
-
-def extract_board_matrix(image_path: str, empty_color: np.ndarray):
-    image = cv2.imread(image_path)
-    if image is None:
-        raise FileNotFoundError(f"Could not read {image_path}")
-
-    x0, y0 = GRID_TOP_LEFT
-    board = image[y0:y0 + GRID_SIZE, x0:x0 + GRID_SIZE]
-
+def extract_matrix(image_hsv, board_rect, empty_tile_hsv):
+    x, y, w, h = board_rect
+    cell_w, cell_h = w // GRID_SIZE, h // GRID_SIZE
     matrix = []
-    for row in range(GRID_DIM):
-        matrix_row = []
-        for col in range(GRID_DIM):
-            x1 = col * CELL_SIZE
-            y1 = row * CELL_SIZE
-            cell = board[y1:y1 + CELL_SIZE, x1:x1 + CELL_SIZE]
 
-            empty = is_empty_cell(cell, empty_color)
-            matrix_row.append(0 if empty else 1)
-        matrix.append(matrix_row)
+    for i in range(GRID_SIZE):
+        row = []
+        for j in range(GRID_SIZE):
+            cx = x + j * cell_w + cell_w // 2
+            cy = y + i * cell_h + cell_h // 2
+            sample = image_hsv[cy, cx]
+            diff = np.abs(sample.astype(int) - empty_tile_hsv.astype(int))
+            row.append(0 if np.all(diff < TOLERANCE) else 1)
+        matrix.append(row)
 
     return matrix
 
 if __name__ == "__main__":
-    empty_color = get_empty_tile_color(EMPTY_TILE_PATH)
-    matrix = extract_board_matrix("latest_capture.png", empty_color)
+    full_rgb = cv2.imread(CAPTURE_PATH)
+    full_hsv = cv2.cvtColor(full_rgb, cv2.COLOR_BGR2HSV)
 
-    with open(OUTPUT_JSON, "w") as f:
+    bg_hsv = get_hsv_from_background(BG_IMAGE_PATH, sample_coord=SAMPLE_COORD)
+    empty_tile_hsv = get_hsv_from_background(EMPTY_TILE_PATH, sample_coord=SAMPLE_COORD)
+
+    board_rect = find_board_bounds(full_hsv, bg_hsv)
+    matrix = extract_matrix(full_hsv, board_rect, empty_tile_hsv)
+
+    with open("board_matrix.json", "w") as f:
         json.dump(matrix, f)
-    print(f"[INFO] Matrix saved to {OUTPUT_JSON}")
+
+    for row in matrix:
+        print(row)

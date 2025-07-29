@@ -10,21 +10,22 @@ OUTPUT_JSON         = "board_matrix.json"
 
 GRID_SIZE          = 8
 
-# color tolerances (BGR distance)
-UI_BG_TOL   = 30     # for locating the window
-GRID_BG_TOL = 20     # for occupancy test inside cells
+# color tolerances
+UI_BG_TOL   = 30    # match QuickTime window
+GRID_BG_TOL = 20    # match grid‑background (empty cell)
 
-# morphological sizes
-MORPH_UI    = 25     # to close holes in window mask
-MORPH_GRID  = 7      # to close holes in grid mask
+# morphology
+MORPH_UI    = 25
+MORPH_GRID  = 7
 
-# how much of the window to ignore at top/bottom
-TOP_CROP_FRAC   = 0.15   # ignore top 15% (score UI)
-BOT_CROP_FRAC   = 0.10   # ignore bottom 10% (preview pieces)
+# crop fractions
+TOP_CROP_FRAC   = 0.15
+BOT_CROP_FRAC   = 0.10
 
-# occupancy test
-PATCH_SCALE     = 0.6    # sample central 60% of each cell
-OCC_THRESH      = 0.10   # >10% non‑bg pixels → filled
+# per‑cell sample
+PATCH_SCALE     = 0.6
+OCC_THRESH      = 0.10
+
 
 def sample_bgr(path):
     img = cv2.imread(path)
@@ -33,8 +34,8 @@ def sample_bgr(path):
     h,w,_ = img.shape
     return img[h//2, w//2].astype(np.int32)
 
+
 def find_window_roi(full, ui_bg):
-    """Mask out UI background, close, take largest contour = app window."""
     diff = np.linalg.norm(full.astype(np.int32) - ui_bg[None,None,:], axis=2)
     mask = (diff < UI_BG_TOL).astype(np.uint8)*255
     mask = cv2.bitwise_not(mask)
@@ -44,73 +45,76 @@ def find_window_roi(full, ui_bg):
     x,y,w,h = cv2.boundingRect(max(cnts, key=lambda c:cv2.contourArea(c)))
     return x,y,w,h
 
+
 def detect_grid_lines(board_gray):
-    """Return (vertical_lines, horizontal_lines) from Hough on morphological masks."""
     H,W = board_gray.shape
 
-    # edge map
-    blur = cv2.GaussianBlur(board_gray, (5,5),0)
+    # Edge map
+    blur  = cv2.GaussianBlur(board_gray, (5,5), 0)
     edges = cv2.Canny(blur, 50, 150)
 
-    # vertical mask → HoughLinesP for near‑vertical
-    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, H//10))
-    v_mask = cv2.morphologyEx(edges, cv2.MORPH_OPEN, v_kernel)
-    v_lines = cv2.HoughLinesP(v_mask, 1, np.pi/180,
-                              threshold=H//2,
-                              minLineLength=H*0.7,
-                              maxLineGap=20) or []
+    # Vertical
+    vk   = cv2.getStructuringElement(cv2.MORPH_RECT, (1, H//10))
+    vmask= cv2.morphologyEx(edges, cv2.MORPH_OPEN, vk)
+    raw_v= cv2.HoughLinesP(vmask,1,np.pi/180,
+                           threshold=H//2,
+                           minLineLength=int(H*0.7),
+                           maxLineGap=20)
+    verts=[]
+    if raw_v is not None:
+        for x1,y1,x2,y2 in raw_v.reshape(-1,4):
+            verts.append(((x1,y1),(x2,y2)))
 
-    # horizontal mask → HoughLinesP for near‑horizontal
-    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (W//10, 1))
-    h_mask = cv2.morphologyEx(edges, cv2.MORPH_OPEN, h_kernel)
-    h_lines = cv2.HoughLinesP(h_mask, 1, np.pi/180,
-                              threshold=W//2,
-                              minLineLength=W*0.7,
-                              maxLineGap=20) or []
+    # Horizontal
+    hk   = cv2.getStructuringElement(cv2.MORPH_RECT, (W//10, 1))
+    hmask= cv2.morphologyEx(edges, cv2.MORPH_OPEN, hk)
+    raw_h= cv2.HoughLinesP(hmask,1,np.pi/180,
+                           threshold=W//2,
+                           minLineLength=int(W*0.7),
+                           maxLineGap=20)
+    hors=[]
+    if raw_h is not None:
+        for x1,y1,x2,y2 in raw_h.reshape(-1,4):
+            hors.append(((x1,y1),(x2,y2)))
 
-    # filter & average coords
-    verts = [((x1,y1),(x2,y2)) for x1,y1,x2,y2 in v_lines.reshape(-1,4)]
-    hors  = [((x1,y1),(x2,y2)) for x1,y1,x2,y2 in h_lines.reshape(-1,4)]
     return verts, hors
 
+
 def cluster_positions(pos_list, max_dist):
-    """Agglomerative cluster of scalars: average within max_dist."""
-    if not pos_list: return []
-    sorted_p = sorted(pos_list)
-    clusters = [[sorted_p[0]]]
-    for p in sorted_p[1:]:
+    if not pos_list:
+        return []
+    pts = sorted(pos_list)
+    clusters = [[pts[0]]]
+    for p in pts[1:]:
         if abs(p - np.mean(clusters[-1])) <= max_dist:
             clusters[-1].append(p)
         else:
             clusters.append([p])
     return [int(np.mean(c)) for c in clusters]
 
+
 def find_cell_boundaries(board):
-    """Detect 9 vertical & 9 horizontal boundaries, return sorted x[], y[]."""
     gray = cv2.cvtColor(board, cv2.COLOR_BGR2GRAY)
     verts, hors = detect_grid_lines(gray)
-
     H,W = gray.shape
-    # extract center positions
+
     xs = [ (x1+x2)//2 for (x1,y1),(x2,y2) in verts ]
     ys = [ (y1+y2)//2 for (x1,y1),(x2,y2) in hors ]
 
-    # cluster by half‐cell spacing
-    cell_w = W / GRID_SIZE
-    cell_h = H / GRID_SIZE
+    cell_w = W/GRID_SIZE
+    cell_h = H/GRID_SIZE
+
     xs_cl = cluster_positions(xs, max_dist=cell_w/2)
     ys_cl = cluster_positions(ys, max_dist=cell_h/2)
 
-    # ensure we have at least 9 lines: add borders if missing
+    # Ensure exactly GRID_SIZE+1 boundaries
     if len(xs_cl) < GRID_SIZE+1:
         xs_cl = [0] + xs_cl + [W]
     if len(ys_cl) < GRID_SIZE+1:
         ys_cl = [0] + ys_cl + [H]
 
-    # sort & pick the central GRID_SIZE+1 lines
     xs_cl = sorted(xs_cl)
     ys_cl = sorted(ys_cl)
-    # take the middle GRID_SIZE+1 if more
     if len(xs_cl) > GRID_SIZE+1:
         start = (len(xs_cl) - (GRID_SIZE+1))//2
         xs_cl = xs_cl[start:start+GRID_SIZE+1]
@@ -120,80 +124,73 @@ def find_cell_boundaries(board):
 
     return xs_cl, ys_cl
 
+
 def classify_cells(board, xs, ys, grid_bg):
-    """Build 8×8 matrix by occupancy test inside each cell patch."""
+    patch = int((board.shape[1]/GRID_SIZE)*PATCH_SCALE)
     mat=[]
-    H,W = board.shape[:2]
-    patch = int((W/GRID_SIZE) * PATCH_SCALE)
     for i in range(GRID_SIZE):
         row=[]
         for j in range(GRID_SIZE):
             x0,x1 = xs[j], xs[j+1]
             y0,y1 = ys[i], ys[i+1]
-            # sample central patch
-            cx = int((x0+x1)/2 - patch/2)
-            cy = int((y0+y1)/2 - patch/2)
-            tile = board[cy:cy+patch, cx:cx+patch].astype(np.int32)
-            # occupancy = fraction of pixels != grid_bg
+            cx,cy = (x0+x1)//2, (y0+y1)//2
+            tile = board[cy-patch//2:cy+patch//2, cx-patch//2:cx+patch//2].astype(np.int32)
             dist = np.linalg.norm(tile - grid_bg[None,None,:], axis=2)
             frac = np.mean(dist > GRID_BG_TOL)
             row.append(1 if frac>OCC_THRESH else 0)
         mat.append(row)
     return mat
 
-def main():
-    full = cv2.imread(SCREENSHOT_PATH)
-    ui_bg = sample_bgr(UI_BG_SAMPLE_PATH)
-    grid_bg = sample_bgr(GRID_BG_SAMPLE_PATH)
 
-    # 1) find QuickTime window
-    wx,wy,ww,wh = find_window_roi(full, ui_bg)
-    win = full[wy:wy+wh, wx:wx+ww]
+if __name__=="__main__":
+    full   = cv2.imread(SCREENSHOT_PATH)
+    ui_bg  = sample_bgr(UI_BG_SAMPLE_PATH)
+    grid_bg= sample_bgr(GRID_BG_SAMPLE_PATH)
 
-    # 2) crop out top UI and bottom preview
-    y0 = int(wh*TOP_CROP_FRAC)
-    y1 = int(wh*(1 - BOT_CROP_FRAC))
-    board_roi = win[y0:y1, :]
-  
-    # 3) detect cell boundaries
+    # 1) Window ROI
+    x,y,w,h = find_window_roi(full, ui_bg)
+    win = full[y:y+h, x:x+w]
+
+    # 2) Crop top/bottom
+    top = int(h*TOP_CROP_FRAC)
+    bot = int(h*(1 - BOT_CROP_FRAC))
+    board_roi = win[top:bot, :]
+
+    # 3) Find lines → boundaries
     xs, ys = find_cell_boundaries(board_roi)
 
-    # map back coords to full image
-    xs = [int(x + wx) for x in xs]
-    ys = [int(y + wy + y0) for y in ys]
+    # Map back to full image coords
+    xs = [ int(x + x) for x in xs ]
+    ys = [ int(y + top + y) for y in ys ]
 
-    # 4) extract board patch for classification
-    board_full = full[ ys[0]:ys[-1], xs[0]:xs[-1] ]
+    # 4) Extract board patch
+    bx, by = xs[0], ys[0]
+    board_full = full[by:ys[-1], bx:xs[-1]]
 
-    # 5) classify
-    matrix = classify_cells(board_full, 
-                            [x - xs[0] for x in xs], 
-                            [y - ys[0] for y in ys],
-                            grid_bg)
+    # 5) Classify
+    # Adjust xs,ys relative to board_full origin
+    xs_rel = [i - xs[0] for i in xs]
+    ys_rel = [i - ys[0] for i in ys]
+    matrix = classify_cells(board_full, xs_rel, ys_rel, grid_bg)
 
-    # 6) visualize
+    # 6) Draw & show
     viz = full.copy()
-    # draw lines
-    for x in xs: cv2.line(viz, (x, ys[0]), (x, ys[-1]), (0,255,0),1)
-    for y in ys: cv2.line(viz, (xs[0], y), (xs[-1], y), (0,255,0),1)
-    # overlay occupancy
-    cell_w = (xs[1]-xs[0])
-    cell_h = (ys[1]-ys[0])
+    for x in xs: cv2.line(viz, (x,ys[0]), (x,ys[-1]), (0,255,0),1)
+    for y in ys: cv2.line(viz, (xs[0],y), (xs[-1],y), (0,255,0),1)
+    cell_w = xs[1]-xs[0]; cell_h = ys[1]-ys[0]
     for i in range(GRID_SIZE):
         for j in range(GRID_SIZE):
-            color = (0,0,255) if matrix[i][j] else (0,255,0)
-            x0 = xs[j]; y0 = ys[i]
-            cv2.rectangle(viz, (x0,y0), (x0+cell_w,y0+cell_h), color, 2)
-
-    cv2.imshow("Grid & Cells", viz)
+            col=(0,0,255) if matrix[i][j] else (0,255,0)
+            cv2.rectangle(viz,
+                (xs[j], ys[i]),
+                (xs[j]+cell_w, ys[i]+cell_h),
+                col,2)
+    cv2.imshow("Detected Grid", viz)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
-    # 7) save JSON
-    with open(OUTPUT_JSON, "w") as f:
+    # 7) Save
+    with open(OUTPUT_JSON,"w") as f:
         json.dump(matrix, f, indent=2)
     print(f"✅ board_matrix.json saved")
     for row in matrix: print(row)
-
-if __name__=="__main__":
-    main()

@@ -1,5 +1,5 @@
 import cv2
-from capture import get_blockblast_frame_from_quicktime
+from capture_utils import get_blockblast_frame_from_quicktime
 from detect_board import extract_board_matrix
 
 def draw_matrix_on_image(image, matrix):

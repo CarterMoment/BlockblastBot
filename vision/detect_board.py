@@ -3,7 +3,7 @@ import cv2, numpy as np, json, os
 
 # ——— CONFIGURATION ———
 ASSETS_DIR       = "assets"
-CAPTURE_IMG      = os.path.join(ASSETS_DIR, "latest_capture.png")
+CAPTURE_IMG      = "latest_capture.png"
 EMPTY_TILE_IMG   = os.path.join(ASSETS_DIR, "inverted_empty_tile.png")
 OUTPUT_JSON      = "board_matrix.json"
 

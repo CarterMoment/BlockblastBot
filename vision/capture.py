@@ -56,3 +56,39 @@ def live_capture_blockblast_window(hsv_color, hue_range=15, sat_range=60, val_ra
 if __name__ == "__main__":
     hsv_color = get_hsv_from_background("assets/blank_background.png", sample_coord=SAMPLE_COORD)
     live_capture_blockblast_window(hsv_color)
+
+
+    def get_blockblast_frame_from_quicktime():
+    hsv_color = get_hsv_from_background("assets/blank_background.png", sample_coord=SAMPLE_COORD)
+
+    screen = ImageGrab.grab()
+    screen_np = np.array(screen)
+    screen_bgr = cv2.cvtColor(screen_np, cv2.COLOR_RGB2BGR)
+    hsv = cv2.cvtColor(screen_bgr, cv2.COLOR_BGR2HSV)
+
+    lower = np.array([
+        max(0, hsv_color[0] - 15),
+        max(0, hsv_color[1] - 60),
+        max(0, hsv_color[2] - 80)
+    ])
+    upper = np.array([
+        min(179, hsv_color[0] + 15),
+        min(255, hsv_color[1] + 60),
+        min(255, hsv_color[2] + 80)
+    ])
+
+    mask = cv2.inRange(hsv, lower, upper)
+    mask = cv2.medianBlur(mask, 7)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        print("[WARN] No matching QuickTime region found.")
+        return None
+
+    largest = max(contours, key=cv2.contourArea)
+    x, y, w, h = cv2.boundingRect(largest)
+    x1, y1 = max(x - PADDING, 0), max(y - PADDING, 0)
+    x2, y2 = min(x + w + PADDING, screen_np.shape[1]), min(y + h + PADDING, screen_np.shape[0])
+
+    cropped = screen_np[y1:y2, x1:x2]
+    return cv2.cvtColor(cropped, cv2.COLOR_RGB2BGR)

@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 from PIL import ImageGrab
 import time
-from vision.capture_quicktime_utils import get_hsv_from_background  # Keep as is
+from capture_quicktime_utils import get_hsv_from_background  # Keep as is
 
 # === CONFIGURATION ===
 PADDING = 10

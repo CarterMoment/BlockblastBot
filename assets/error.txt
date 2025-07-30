@@ -1,0 +1,12 @@
+/Users/carterfrank/Documents/GitHub/BlockblastBot/vision/detect_blocks.py:44: RuntimeWarning: overflow encountered in scalar subtract
+  lower    = np.array([bg_hsv[0]-HUE_TOL, bg_hsv[1]-SAT_TOL, bg_hsv[2]-VAL_TOL])
+Traceback (most recent call last):
+  File "/Users/carterfrank/Documents/GitHub/BlockblastBot/vision/detect_blocks.py", line 161, in <module>
+    main()
+  File "/Users/carterfrank/Documents/GitHub/BlockblastBot/vision/detect_blocks.py", line 148, in main
+    grids, preview, mask, boxes = detect_pieces(full, ui_roi, grid_roi)
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/carterfrank/Documents/GitHub/BlockblastBot/vision/detect_blocks.py", line 49, in detect_pieces
+    bg_mask    = cv2.inRange(prev_hsv, lower, upper)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+cv2.error: OpenCV(4.12.0) /Users/xperience/GHA-Actions-OpenCV/_work/opencv-python/opencv-python/opencv/modules/core/src/arithm.cpp:2092: error: (-215:Assertion failed) lb.type() == ub.type() in function 'inRange'

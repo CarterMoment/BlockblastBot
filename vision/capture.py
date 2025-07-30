@@ -37,7 +37,7 @@ def live_capture_blockblast_window(hsv_color, hue_range=15, sat_range=60, val_ra
         if contours:
             largest = max(contours, key=cv2.contourArea)
             x, y, w, h = cv2.boundingRect(largest)
-            +    # base window crop
+            # base window crop
             x1 = max(x - PADDING, 0)
             y1 = max(y - PADDING, 0)
             x2 = min(x + w + PADDING, screen_np.shape[1])

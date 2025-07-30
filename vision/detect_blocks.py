@@ -4,7 +4,7 @@ from detect_board import sample_color, find_window, find_grid_bounds, extract_ma
 
 # ——— CONFIGURATION ———
 ASSETS         = "assets"
-SHOT           = "latest_capture.png"
+SHOT           = os.path.join(ASSETS, "latest_capture.png")
 UI_BG_SAMPLE   = os.path.join(ASSETS, "inverted_background.png")
 GRID_BG_SAMPLE = os.path.join(ASSETS, "inverted_empty_tile.png")
 OUTPUT_JSON    = "next_blocks.json"

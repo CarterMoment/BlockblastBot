@@ -3,7 +3,7 @@ import cv2, numpy as np, json, os
 
 # ——— CONFIGURATION ———
 ASSETS        = "assets"
-SHOT          = "latest_capture.png"
+SHOT          = os.path.join(ASSETS, "latest_capture.png")
 UI_BG_SAMPLE  = os.path.join(ASSETS, "inverted_background.png")
 GRID_SAMPLE   = os.path.join(ASSETS, "inverted_empty_tile.png")
 OUT_JSON      = "board_matrix.json"

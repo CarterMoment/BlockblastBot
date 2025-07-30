@@ -1,127 +1,151 @@
 #!/usr/bin/env python3
-import cv2
-import numpy as np
-import json
-import os
+import cv2, numpy as np, json, os
+from detect_board import (
+    sample_color,
+    find_window,
+    find_grid_bounds,
+    extract_matrix
+)
 
-from detect_board import find_window, find_grid_bounds, sample_color
+# ——— CONFIGURATION ———
+ASSETS         = "assets"
+CAPTURE_PATH   = "latest_capture.png"
+UI_BG_SAMPLE   = os.path.join(ASSETS, "inverted_background.png")
+GRID_SAMPLE    = os.path.join(ASSETS, "inverted_empty_tile.png")
+BOARD_JSON     = "board_matrix.json"
+BLOCKS_JSON    = "block_list.json"
 
-# ——— CONFIG ———
-ASSETS_DIR       = "assets"
-CAPTURE_PATH     = os.path.join(ASSETS_DIR, "latest_capture.png")
-SAMPLE_TILE_PATH = os.path.join(ASSETS_DIR, "sample_block.png")
-OUTPUT_JSON      = "next_blocks.json"
+# HSV tolerances for masking out the board‐background
+HUE_TOL        = 15
+SAT_TOL        = 60
+VAL_TOL        = 80
 
-PREVIEW_PAD      = 10      # px crop under the board
-MASK_DELTA       = 30      # gray-difference tolerance
-OCC_THRESH       = 0.4     # ≥40% of cell → occupied
-MIN_AREA_FRAC    = 0.25    # drop tiny blobs < this fraction of tile²
-DEBUG            = False
+# Preview‐strip padding (to avoid UI chrome)
+PREVIEW_PAD    = 5
 
-def detect_next_blocks(full, ui_roi, board_roi):
+# Minimum contour area (in px²) to count as a block
+MIN_BLOCK_AREA = 200
+
+DEBUG          = True
+
+def detect_blocks(full, ui_roi, grid_roi, grid_bg_bgr):
+    """Return list of (x,y,w,h) for each bottom‐preview block."""
     x0,y0,w0,h0 = ui_roi
-    bx,by,bs,_  = board_roi
+    gx,gy,gs,_  = grid_roi
 
-    # 1) Crop the preview strip
-    H,W = full.shape[:2]
-    top    = min(H, y0+by+bs + PREVIEW_PAD)
-    bottom = max(0, H - PREVIEW_PAD)
-    left   = min(W, x0 + PREVIEW_PAD)
-    right  = max(0, x0 + w0 - PREVIEW_PAD)
-    if bottom<=top or right<=left:
-        return [], None, None, None
-    prev = full[top:bottom, left:right]
-    gray = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY)
+    # 1) Crop the region *below* the 8×8 board
+    top    = y0 + gy + gs + PREVIEW_PAD
+    bottom = y0 + h0 - PREVIEW_PAD
+    left   = x0 + PREVIEW_PAD
+    right  = x0 + w0 - PREVIEW_PAD
 
-    # 2) Threshold around sample tile’s median gray
-    samp = cv2.imread(SAMPLE_TILE_PATH, cv2.IMREAD_GRAYSCALE)
-    if samp is None:
-        raise FileNotFoundError(f"Missing {SAMPLE_TILE_PATH}")
-    med = int(np.median(samp))
-    diff = cv2.absdiff(gray, np.full_like(gray, med))
-    mask = (diff <= MASK_DELTA).astype(np.uint8)
+    preview = full[top:bottom, left:right]
+    if preview.size == 0:
+        return [], preview, None
 
-    # 3) Morphology clean
-    kern = cv2.getStructuringElement(cv2.MORPH_RECT,(3,3))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kern)
+    # 2) Mask out the grid‐background color in HSV
+    hsv        = cv2.cvtColor(preview, cv2.COLOR_BGR2HSV)
+    bg_hsv     = cv2.cvtColor(
+                    np.uint8([[grid_bg_bgr]]),
+                    cv2.COLOR_BGR2HSV
+                 )[0,0]
+    lower = np.array([
+        max(0,   bg_hsv[0] - HUE_TOL),
+        max(0,   bg_hsv[1] - SAT_TOL),
+        max(0,   bg_hsv[2] - VAL_TOL),
+    ])
+    upper = np.array([
+        min(179, bg_hsv[0] + HUE_TOL),
+        min(255, bg_hsv[1] + SAT_TOL),
+        min(255, bg_hsv[2] + VAL_TOL),
+    ])
+    bg_mask    = cv2.inRange(hsv, lower, upper)
+    block_mask = cv2.bitwise_not(bg_mask)
+    block_mask = cv2.medianBlur(block_mask, 7)
 
-    # 4) Connected-components → one blob per piece
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    tile_px = bs/8.0
-    grids = []
+    # 3) Find contours → each is one preview block
+    cnts,_ = cv2.findContours(block_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     boxes = []
+    for c in cnts:
+        x,y,w,h = cv2.boundingRect(c)
+        if w*h >= MIN_BLOCK_AREA:
+            boxes.append((x,y,w,h))
 
-    for lbl in range(1,n):
-        area = stats[lbl,cv2.CC_STAT_AREA]
-        if area < MIN_AREA_FRAC * (tile_px**2):
-            continue
+    # 4) shift box coords back to full‐image space
+    boxes_full = [(left+x, top+y, w, h) for x,y,w,h in boxes]
+    return boxes_full, preview, block_mask
 
-        x = stats[lbl,cv2.CC_STAT_LEFT]
-        y = stats[lbl,cv2.CC_STAT_TOP]
-        w = stats[lbl,cv2.CC_STAT_WIDTH]
-        h = stats[lbl,cv2.CC_STAT_HEIGHT]
+def visualize_all(full, ui_roi, grid_roi, matrix, boxes):
+    x0,y0,w0,h0 = ui_roi
+    gx,gy,gs,_  = grid_roi
 
-        # 5) Build an occupancy grid of size rows×cols
-        cols = max(1, int(round(w / tile_px)))
-        rows = max(1, int(round(h / tile_px)))
-        grid = []
-        for i in range(rows):
-            row=[]
-            for j in range(cols):
-                x1 = int(x + j*tile_px)
-                x2 = int(x + (j+1)*tile_px)
-                y1 = int(y + i*tile_px)
-                y2 = int(y + (i+1)*tile_px)
-                patch = mask[y1:y2, x1:x2]
-                row.append(1 if patch.mean() > OCC_THRESH else 0)
-            grid.append(row)
+    vis = full.copy()
 
-        grids.append(grid)
-        boxes.append((x,y,w,h))
+    # draw window & board
+    cv2.rectangle(vis, (x0,y0), (x0+w0,y0+h0), (255,0,0), 2)
+    cv2.rectangle(vis,
+                  (x0+gx,y0+gy),
+                  (x0+gx+gs, y0+gy+gs),
+                  (0,255,255), 2)
 
-    # sort left→right by box-x
-    order = sorted(range(len(boxes)), key=lambda i: boxes[i][0])
-    grids = [grids[i] for i in order]
+    # overlay the 8×8 matrix
+    cell = gs // len(matrix)
+    for i,row in enumerate(matrix):
+        for j,val in enumerate(row):
+            color = (0,0,255) if val else (0,255,0)
+            x1 = x0 + gx + j*cell
+            y1 = y0 + gy + i*cell
+            cv2.rectangle(vis, (x1,y1),
+                          (x1+cell, y1+cell),
+                          color, 1)
 
-    return grids, prev, mask, stats
+    # draw bottom‐block boxes
+    for (bx,by,bw,bh) in boxes:
+        cv2.rectangle(vis, (bx,by), (bx+bw, by+bh), (0,165,255), 2)
 
-def visualize(prev, mask, stats):
-    # show preview & mask
-    cv2.imshow("Preview", prev)
-    cv2.imshow("Mask", mask*255)
-
-    # overlay each component
-    vis = cv2.cvtColor(prev, cv2.COLOR_BGR2RGB)
-    for lbl in range(1, stats.shape[0]):
-        x,y,w,h = stats[lbl,cv2.CC_STAT_LEFT], stats[lbl,cv2.CC_STAT_TOP], \
-                  stats[lbl,cv2.CC_STAT_WIDTH], stats[lbl,cv2.CC_STAT_HEIGHT]
-        area = stats[lbl,cv2.CC_STAT_AREA]
-        if area < MIN_AREA_FRAC*( (bs/8.0)**2 ): continue
-        cv2.rectangle(vis, (x,y), (x+w,y+h), (255,0,0), 2)
-
-    cv2.imshow("Pieces", vis)
+    cv2.imshow("All Detection", vis)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
+
+def main():
+    full    = cv2.imread(CAPTURE_PATH)
+    ui_bg   = sample_color(UI_BG_SAMPLE)
+    grid_bg = sample_color(GRID_SAMPLE)
+
+    # 1) Locate window and board
+    ui_roi   = find_window(full, ui_bg)
+    win_img  = full[ui_roi[1]:ui_roi[1]+ui_roi[3],
+                    ui_roi[0]:ui_roi[0]+ui_roi[2]]
+    grid_roi = find_grid_bounds(win_img, grid_bg)
+
+    # 2) Extract the 8×8 matrix
+    matrix = extract_matrix(win_img, grid_roi, grid_bg)
+
+    # 3) Save board matrix
+    with open(BOARD_JSON, "w") as f:
+        json.dump(matrix, f, indent=2)
+
+    # 4) Detect bottom blocks
+    boxes, preview, mask = detect_blocks(full, ui_roi, grid_roi, grid_bg)
+
+    # 5) Save block list
+    with open(BLOCKS_JSON, "w") as f:
+        json.dump(boxes, f, indent=2)
+
+    print("Board matrix:")
+    for r in matrix:
+        print(r)
+    print("Detected blocks (x,y,w,h):", boxes)
+
+    # 6) Visualize everything
+    if DEBUG:
+        visualize_all(full, ui_roi, grid_roi, matrix, boxes)
+        # optional: also show preview + mask
+        cv2.imshow("Preview", preview)
+        cv2.imshow("Mask", mask)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
 if __name__=="__main__":
-    full = cv2.imread(CAPTURE_PATH)
-    ui_bg   = sample_color(os.path.join(ASSETS_DIR,"inverted_background.png"))
-    grid_bg = sample_color(os.path.join(ASSETS_DIR,"inverted_empty_tile.png"))
-
-    ui_roi = find_window(full, ui_bg)
-    win    = full[ui_roi[1]:ui_roi[1]+ui_roi[3],
-                  ui_roi[0]:ui_roi[0]+ui_roi[2]]
-    grid_roi = find_grid_bounds(win, grid_bg)
-    board_roi = (ui_roi[0]+grid_roi[0],
-                 ui_roi[1]+grid_roi[1],
-                 grid_roi[2], grid_roi[3])
-
-    grids, prev, mask, stats = detect_next_blocks(full, ui_roi, board_roi)
-
-    if DEBUG and prev is not None:
-        visualize(prev, mask, stats)
-
-    # save only the grids
-    with open(OUTPUT_JSON,"w") as f:
-        json.dump(grids, f, indent=2)
-    print(json.dumps(grids, indent=2))
+    main()

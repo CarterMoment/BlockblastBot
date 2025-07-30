@@ -16,20 +16,26 @@ SAT_TOL        = 60
 VAL_TOL        = 60
 DEBUG          = True
 
-def detect_pieces(full, ui_roi, grid_roi):
+# ——— new config at top of file ———
+PREVIEW_OFFSET = -5
+STRIP_TILES    = 2.2
+# ———————————————————————————
+
+def detect_pieces(full_img, ui_roi, grid_roi):
     x0,y0,w0,h0 = ui_roi
     gx,gy,gs,_  = grid_roi
 
-    # 1) compute preview crop of only STRIP_TILES tile-heights
-    tile_h    = gs/8.0
-    top       = int(y0 + gy + gs + PREVIEW_PAD)
-    preview_h = int(tile_h * STRIP_TILES)
-    bottom    = top + preview_h
-    left, right = x0, x0 + w0
-
-    preview = full[top:bottom, left:right]
+    # 1) crop a little above & below the board
+    tile_h     = gs / 8.0
+    top        = int(y0 + gy + gs + PREVIEW_OFFSET)
+    preview_h  = int(tile_h * STRIP_TILES)
+    preview    = full_img[top : top + preview_h,
+                          x0  : x0 + w0]
     if preview.size == 0:
         return [], preview, None, []
+
+    # … rest of your mask→CC→grid code unchanged …
+
 
     # 2) HSV–mask out the grid background color
     grid_bgr = cv2.imread(GRID_BG_SAMPLE)

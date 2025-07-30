@@ -25,7 +25,7 @@ def detect_pieces(full_img, ui_roi, grid_roi):
     x0,y0,w0,h0 = ui_roi
     gx,gy,gs,_  = grid_roi
 
-    # 1) crop the strip under the 8×8 board
+    # 1) crop preview strip
     top    = int(y0 + gy + gs + PREVIEW_PAD)
     bottom = y0 + h0
     left   = x0
@@ -34,62 +34,69 @@ def detect_pieces(full_img, ui_roi, grid_roi):
     if preview.size == 0:
         return [], preview, None, []
 
-    # 2) HSV‑mask out grid background so only colored blocks remain
+    # 2) mask out grid‐background in HSV
     grid_bgr = cv2.imread(GRID_BG_SAMPLE)
     gh,gw    = grid_bgr.shape[:2]
     bg_px    = grid_bgr[gh//2, gw//2]
-    bg_hsv   = cv2.cvtColor(bg_px[None,None,:], cv2.COLOR_BGR2HSV)[0,0]
+    # convert to Python ints
+    h0_i, s0_i, v0_i = int(bg_px[0]), int(bg_px[1]), int(bg_px[2])
+    bg_hsv   = cv2.cvtColor(np.uint8([[bg_px]]), cv2.COLOR_BGR2HSV)[0,0]
+    # build lower/upper in signed ints
+    hl = h0_i - HUE_TOL
+    sl = s0_i - SAT_TOL
+    vl = v0_i - VAL_TOL
+    hu = h0_i + HUE_TOL
+    su = s0_i + SAT_TOL
+    vu = v0_i + VAL_TOL
+    # clamp to valid ranges
+    hl, sl, vl = max(0, hl), max(0, sl), max(0, vl)
+    hu, su, vu = min(179, hu), min(255, su), min(255, vu)
+    # cast to uint8
+    lower = np.array([hl, sl, vl], dtype=np.uint8)
+    upper = np.array([hu, su, vu], dtype=np.uint8)
 
-    prev_hsv = cv2.cvtColor(preview, cv2.COLOR_BGR2HSV)
-    lower    = np.array([bg_hsv[0]-HUE_TOL, bg_hsv[1]-SAT_TOL, bg_hsv[2]-VAL_TOL])
-    upper    = np.array([bg_hsv[0]+HUE_TOL, bg_hsv[1]+SAT_TOL, bg_hsv[2]+VAL_TOL])
-    lower    = np.maximum(lower, 0)
-    upper    = np.minimum(upper, [179,255,255])
-
+    prev_hsv   = cv2.cvtColor(preview, cv2.COLOR_BGR2HSV)
     bg_mask    = cv2.inRange(prev_hsv, lower, upper)
     piece_mask = cv2.bitwise_not(bg_mask)
     piece_mask = cv2.medianBlur(piece_mask, 5)
 
-    # 3) connected-components → one blob per piece
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(piece_mask, connectivity=8)
-    # tile_px only used for area thresholding
-    tile_px = gs / 8.0
-    min_area = 0.2 * tile_px * tile_px
+    # 3) connected‑components, etc…
+    # (the rest of your code stays the same)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(piece_mask, 8)
+    tile_px = gs/8.0
+    min_area = 0.2*tile_px*tile_px
 
     grids, boxes = [], []
     for lbl in range(1, n):
         area = stats[lbl, cv2.CC_STAT_AREA]
         if area < min_area:
             continue
-
-        x = stats[lbl, cv2.CC_STAT_LEFT]
-        y = stats[lbl, cv2.CC_STAT_TOP]
-        w = stats[lbl, cv2.CC_STAT_WIDTH]
-        h = stats[lbl, cv2.CC_STAT_HEIGHT]
+        x = stats[lbl,cv2.CC_STAT_LEFT]
+        y = stats[lbl,cv2.CC_STAT_TOP]
+        w = stats[lbl,cv2.CC_STAT_WIDTH]
+        h = stats[lbl,cv2.CC_STAT_HEIGHT]
         blob = piece_mask[y:y+h, x:x+w]
 
-        # 4) infer avg square size (px) and thereby rows/cols
-        avg_sq = np.sqrt(area / 4.0)
-        rows = max(1, min(4, int(round(h / avg_sq))))
-        cols = max(1, min(4, int(round(w / avg_sq))))
+        avg_sq = np.sqrt(area/4.0)
+        rows   = max(1, min(4, int(round(h/avg_sq))))
+        cols   = max(1, min(4, int(round(w/avg_sq))))
 
-        # 5) subdivide blob bbox into rows×cols cells → occupancy grid
         grid = []
         for i in range(rows):
             row = []
             for j in range(cols):
-                x1 = int(j * w/cols)
-                y1 = int(i * h/rows)
-                x2 = int((j+1) * w/cols)
-                y2 = int((i+1) * h/rows)
+                x1 = int(j*w/cols)
+                y1 = int(i*h/rows)
+                x2 = int((j+1)*w/cols)
+                y2 = int((i+1)*h/rows)
                 cell = blob[y1:y2, x1:x2]
-                row.append(1 if cell.mean() > 0.3 else 0)
+                row.append(1 if cell.mean()>0.3 else 0)
             grid.append(row)
 
         grids.append(grid)
         boxes.append((x,y,w,h))
 
-    # 6) sort left→right by box x
+    # sort & return
     order = sorted(range(len(boxes)), key=lambda i: boxes[i][0])
     grids = [grids[i] for i in order]
     boxes = [boxes[i] for i in order]

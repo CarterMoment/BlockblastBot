@@ -11,7 +11,7 @@ SHOT            = os.path.join(ASSETS, "latest_capture.png")
 UI_BG_SAMPLE    = os.path.join(ASSETS, "inverted_background.png")
 GRID_BG_SAMPLE  = os.path.join(ASSETS, "inverted_empty_tile.png")
 
-PREVIEW_OFFSET  = -5    # px above board bottom
+PREVIEW_OFFSET  = 20   # px above board bottom
 STRIP_TILES     = 3   # how many tile‑heights to grab
 BG_TOL          = 40    # BGR‐distance tolerance to consider “background”
 

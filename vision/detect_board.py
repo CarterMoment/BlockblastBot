@@ -3,7 +3,7 @@ import cv2, numpy as np, json, os
 
 # ——— CONFIGURATION ———
 ASSETS        = "assets"
-SHOT          = os.path.join(ASSETS, "latest_capture.png")
+SHOT          = "latest_capture.png"
 UI_BG_SAMPLE  = os.path.join(ASSETS, "inverted_background.png")
 GRID_SAMPLE   = os.path.join(ASSETS, "inverted_empty_tile.png")
 OUT_JSON      = "board_matrix.json"
@@ -15,6 +15,8 @@ GRID_BG_TOL     = 20     # tolerance for grid background detection
 ROW_COL_FRAC    = 0.60   # require 60% of pixels to match grid‑bg for a row/col
 PATCH_SCALE     = 0.6    # 60% central patch for occupancy test
 OCC_THRESH      = 0.10   # >10% non‑bg pixels → filled
+
+DEBUG = False
 
 def sample_color(path):
     img = cv2.imread(path)
@@ -138,7 +140,10 @@ def main():
         print(row)
 
     # 5. visualize overlay
-    visualize(full, ui_roi, (gx,gy,gs,gd), matrix)
+    if DEBUG:
+        visualize(full, ui_roi, (gx,gy,gs,gd), matrix)
 
 if __name__=="__main__":
     main()
+
+
